@@ -23,7 +23,7 @@ from .types import (
     WeightedModel,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __author__ = "Havencto"
 __email__ = "officialhavennetwork@gmail.com"
 
