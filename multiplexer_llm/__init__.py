@@ -22,8 +22,18 @@ from .types import (
     OpenAICompatibleClient,
     WeightedModel,
 )
+from .exceptions import (
+    MultiplexerError,
+    ModelSelectionError,
+    APIError,
+    ModelNotFoundError,
+    AuthenticationError,
+    RateLimitError,
+    ServiceUnavailableError,
+    AllModelsFailedError,
+)
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __author__ = "Havencto"
 __email__ = "officialhavennetwork@gmail.com"
 
@@ -36,6 +46,15 @@ __all__ = [
     "ModelStats",
     "CompletionOptions",
     "CompletionResult",
+    # Custom exceptions
+    "MultiplexerError",
+    "ModelSelectionError",
+    "APIError",
+    "ModelNotFoundError",
+    "AuthenticationError",
+    "RateLimitError",
+    "ServiceUnavailableError",
+    "AllModelsFailedError",
 ]
 
 # Export the main class as the default export for convenience

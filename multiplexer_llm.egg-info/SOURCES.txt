@@ -3,6 +3,7 @@ pyproject.toml
 requirements.txt
 setup.py
 multiplexer_llm/__init__.py
+multiplexer_llm/exceptions.py
 multiplexer_llm/multiplexer.py
 multiplexer_llm/test_helper.py
 multiplexer_llm/types.py

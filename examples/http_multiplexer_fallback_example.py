@@ -18,19 +18,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from multiplexer_llm import Multiplexer
 from openai import AsyncOpenAI
+from collections import defaultdict
 
 async def create_clients():
     """Create clients for custom endpoints."""
     # Primary endpoint
     primary_client = AsyncOpenAI(
         api_key="dummy_api_key",  # Set a dummy API key
-        base_url="http://192.168.68.67:7045/v1",  # Assuming /v1 path for OpenAI compatibility
+        base_url="http://192.168.68.70:1234/v1",  # Assuming /v1 path for OpenAI compatibility
     )
     
     # Fallback endpoint
     fallback_client = AsyncOpenAI(
         api_key="dummy_api_key",  # Set a dummy API key
-        base_url="http://192.168.68.70:1234/v1",  # Assuming /v1 path for OpenAI compatibility
+        base_url="http://192.168.68.67:7045/v1",  # Assuming /v1 path for OpenAI compatibility
     )
     
     return {
@@ -53,7 +54,10 @@ async def run_chat_completion(multiplexer: Multiplexer):
         )
         print("Chat completion received:")
         print(completion.choices[0].message.content)
-        return True, completion.model_dump().get('model_name', 'unknown')
+        # Return the actual endpoint used (primary or fallback)
+        model_name = completion.model_dump().get('model_name', '')
+        endpoint = "primary-endpoint" if "primary" in model_name else "fallback-endpoint"
+        return True, endpoint
     except Exception as error:
         print(f"Error during chat completion: {error}")
         return False, str(error)
@@ -78,7 +82,7 @@ async def main():
         # Run multiple chat completions and track results
         total_requests = 30
         successful_responses = 0
-        endpoint_results = {"primary-endpoint": 0, "fallback-endpoint": 0}
+        endpoint_results = defaultdict(int)
         failed_requests = []
 
         for _ in range(total_requests):

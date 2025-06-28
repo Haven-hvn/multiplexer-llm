@@ -58,10 +58,12 @@ class WeightedModel:
         model: OpenAICompatibleClient,
         weight: int,
         model_name: str,
+        base_url: Optional[str] = None,
     ) -> None:
         self.model = model
         self.weight = weight
         self.model_name = model_name
+        self.base_url = base_url
         # Timestamp until which the model is disabled due to rate limiting
         self.disabled_until: Optional[float] = None
         # Statistics

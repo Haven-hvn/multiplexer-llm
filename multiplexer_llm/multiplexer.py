@@ -6,6 +6,16 @@ import random
 import time
 from typing import Any, Dict, List, Optional, Union
 
+from .exceptions import (
+    AllModelsFailedError,
+    APIError,
+    AuthenticationError,
+    ModelNotFoundError,
+    ModelSelectionError,
+    MultiplexerError,
+    RateLimitError,
+    ServiceUnavailableError,
+)
 from .types import (
     CompletionOptions,
     CompletionResult,
@@ -100,8 +110,8 @@ class Multiplexer:
         
         # Check if there are models but all disabled
         if self._weighted_models or self._fallback_models:
-            raise RuntimeError("All models are temporarily rate limited.")
-        raise RuntimeError("No models available in the multiplexer.")
+            raise ModelSelectionError("All models are temporarily rate limited.")
+        raise ModelSelectionError("No models available in the multiplexer.")
     
     async def _disable_model_temporarily(
         self, model_name: str, duration_ms: float
@@ -145,7 +155,7 @@ class Multiplexer:
             try:
                 await asyncio.sleep(duration_ms / 1000.0)
                 model.disabled_until = None
-                logger.info(f"Model {model_name} re-enabled after rate limit.")
+                logger.info(f"Model {model_name} re-enabled after temporary disable.")
             except asyncio.CancelledError:
                 logger.debug(f"Re-enable task for {model_name} was cancelled")
                 raise
@@ -158,7 +168,7 @@ class Multiplexer:
         
         logger.warning(
             f"Model {model_name} temporarily disabled for "
-            f"{duration_ms / 1000.0}s due to rate limit."
+            f"{duration_ms / 1000.0}s."
         )
 
     async def _create_completion(
@@ -175,11 +185,12 @@ class Multiplexer:
             try:
                 # Attempt to select an available model
                 selected = self._select_weighted_model()
-            except RuntimeError as selection_error:
+            except ModelSelectionError as selection_error:
                 # If model selection fails (e.g., all rate limited or no models configured)
                 if last_error:
-                    # If we previously caught a 429, throw that error as all retries failed
-                    raise last_error
+                    # Map the last error to our custom exceptions and raise it
+                    # We don't have model info here since selection failed, so pass None
+                    raise self._map_error_to_custom_exception(last_error, None, None)
                 # Otherwise, re-throw the selection error (no models available/configured)
                 raise selection_error
 
@@ -193,11 +204,41 @@ class Multiplexer:
             try:
                 # Attempt the API call
                 result = await selected.model.chat.completions.create(**final_params)
+                
+                # Check if result is None (shouldn't happen but let's be safe)
+                if result is None:
+                    selected.fail_fast_count += 1
+                    raise RuntimeError(f"Client for model {selected.model_name} returned None")
+                
+                # Validate that the response has the expected structure
+                if not hasattr(result, 'choices') or result.choices is None:
+                    selected.fail_fast_count += 1
+                    error_msg = f"Invalid response from model {selected.model_name}: missing or null 'choices' field"
+                    if hasattr(result, 'error'):
+                        error_msg += f". Error: {result.error}"
+                    raise RuntimeError(error_msg)
+                
                 selected.success_count += 1  # Increment success count
                 
-                # Inject the model name into the result
-                result.model = selected.model_name  # Ensure the result contains the model name
-                return result
+                # Create a new result object with the correct model name
+                # We need to handle this carefully since Pydantic models are immutable
+                try:
+                    # Try to create a copy with the updated model name
+                    if hasattr(result, 'model_copy'):
+                        # Pydantic v2 style
+                        updated_result = result.model_copy(update={'model': selected.model_name})
+                    elif hasattr(result, 'copy'):
+                        # Pydantic v1 style
+                        updated_result = result.copy(update={'model': selected.model_name})
+                    else:
+                        # Fallback: try direct assignment (might work for some objects)
+                        updated_result = result
+                        updated_result.model = selected.model_name
+                    return updated_result
+                except Exception as copy_error:
+                    # If we can't update the model name, log it but still return the result
+                    logger.warning(f"Could not update model name for {selected.model_name}: {copy_error}")
+                    return result
             except Exception as error:
                 # Check if it's a rate limit error (429 or 529)
                 if self._is_rate_limit_error(error):
@@ -210,11 +251,24 @@ class Multiplexer:
                     )  # Disable for 1 minute
                     last_error = error  # Store the 429 error
                     continue  # Continue the loop to try another model
+                elif self._is_persistent_error(error):
+                    # Handle persistent errors (connection issues, service unavailable)
+                    logger.warning(
+                        f"Model {selected.model_name} failed with persistent error: {error}. "
+                        "Disabling temporarily and trying next model."
+                    )
+                    selected.fail_fast_count += 1  # Increment fail-fast count
+                    await self._disable_model_temporarily(
+                        selected.model_name, 15 * 1000
+                    )  # Disable for 15 seconds
+                    last_error = error
+                    continue  # Continue the loop to try another model
                 else:
                     selected.fail_fast_count += 1  # Increment fail-fast count
-                    # For any other error, re-throw immediately
-                    logger.error(f"Error in Multiplexer: {selected.model_name}", exc_info=error)
-                    raise error
+                    # Store the error and continue to try next model
+                    last_error = error
+                    logger.warning(f"Model {selected.model_name} failed with error: {error}. Trying next model.")
+                    continue  # Try the next model instead of immediately re-raising
 
     def _is_rate_limit_error(self, error: Exception) -> bool:
         """Check if an error is a rate limit error (429 or 529)."""
@@ -242,11 +296,113 @@ class Multiplexer:
         ]
         return any(indicator in error_str for indicator in rate_limit_indicators)
 
+    def _is_persistent_error(self, error: Exception) -> bool:
+        """Check if an error is a persistent connection/service error."""
+        # Check for OpenAI-style errors with status codes
+        if hasattr(error, "status_code"):
+            # Consider 5xx errors and connection-related errors as persistent
+            return error.status_code >= 500 or error.status_code in (408, 499)
+
+        # Check for requests-style errors
+        if hasattr(error, "response") and hasattr(error.response, "status_code"):
+            status_code = error.response.status_code
+            return status_code >= 500 or status_code in (408, 499)
+        
+        # Check for connection-related error types
+        error_type = type(error).__name__
+        if error_type in ["APIConnectionError", "ConnectionError", "Timeout", "ConnectTimeout", "ReadTimeout"]:
+            return True
+            
+        # Check error message for connection-related keywords
+        error_str = str(error).lower()
+        persistent_indicators = [
+            "connection", "connect", "timeout", "unavailable", "refused", 
+            "network", "unreachable", "host", "dns", "resolve"
+        ]
+        return any(indicator in error_str for indicator in persistent_indicators)
+
+    def _map_error_to_custom_exception(
+        self, 
+        error: Exception, 
+        model_name: Optional[str], 
+        base_url: Optional[str]
+    ) -> MultiplexerError:
+        """Map an underlying error to a custom multiplexer exception."""
+        # Import OpenAI exceptions for type checking
+        try:
+            import openai
+        except ImportError:
+            # If OpenAI is not available, fall back to generic error mapping
+            return MultiplexerError(f"API error: {str(error)}")
+
+        # Extract status code from error
+        status_code = getattr(error, "status_code", None)
+        original_message = str(error)
+
+        # Map specific OpenAI exceptions
+        if isinstance(error, openai.NotFoundError):
+            return ModelNotFoundError(
+                status_code=status_code,
+                endpoint=base_url,
+                model_name=model_name,
+                original_message=original_message
+            )
+        elif isinstance(error, openai.AuthenticationError):
+            return AuthenticationError(
+                status_code=status_code,
+                endpoint=base_url,
+                model_name=model_name,
+                original_message=original_message
+            )
+        elif isinstance(error, openai.RateLimitError) or self._is_rate_limit_error(error):
+            retry_after = getattr(error, "retry_after", None)
+            return RateLimitError(
+                status_code=status_code,
+                endpoint=base_url,
+                model_name=model_name,
+                retry_after=retry_after,
+                original_message=original_message
+            )
+        elif isinstance(error, (openai.APIConnectionError, openai.InternalServerError)):
+            return ServiceUnavailableError(
+                status_code=status_code,
+                endpoint=base_url,
+                model_name=model_name,
+                original_message=original_message
+            )
+        elif isinstance(error, openai.APIError):
+            # Generic API error - check status code
+            if status_code == 404:
+                return ModelNotFoundError(
+                    status_code=status_code,
+                    endpoint=base_url,
+                    model_name=model_name,
+                    original_message=original_message
+                )
+            elif status_code in (401, 403):
+                return AuthenticationError(
+                    status_code=status_code,
+                    endpoint=base_url,
+                    model_name=model_name,
+                    original_message=original_message
+                )
+            elif status_code and 500 <= status_code < 600:
+                return ServiceUnavailableError(
+                    status_code=status_code,
+                    endpoint=base_url,
+                    model_name=model_name,
+                    original_message=original_message
+                )
+        
+        # For any other error, wrap in generic MultiplexerError
+        return MultiplexerError(f"Unexpected error for model {model_name}: {original_message}")
+
     def add_model(
         self,
         model: OpenAICompatibleClient,
         weight: int,
         model_name: str,
+        base_url: Optional[str] = None,
     ) -> None:
         """Add a primary model to the multiplexer."""
         if not isinstance(weight, int) or weight <= 0:
@@ -264,7 +420,7 @@ class Multiplexer:
             return
 
         # Add model with disabled_until initialized to None and stats to 0
-        weighted_model = WeightedModel(model, weight, model_name)
+        weighted_model = WeightedModel(model, weight, model_name, base_url)
         self._weighted_models.append(weighted_model)
 
     def add_fallback_model(
@@ -272,6 +428,7 @@ class Multiplexer:
         model: OpenAICompatibleClient,
         weight: int,
         model_name: str,
+        base_url: Optional[str] = None,
     ) -> None:
         """Add a fallback model to the multiplexer."""
         if not isinstance(weight, int) or weight <= 0:
@@ -289,7 +446,7 @@ class Multiplexer:
             return
 
         # Add fallback model with disabled_until initialized to None and stats to 0
-        weighted_model = WeightedModel(model, weight, model_name)
+        weighted_model = WeightedModel(model, weight, model_name, base_url)
         self._fallback_models.append(weighted_model)
 
     def reset(self) -> None:
