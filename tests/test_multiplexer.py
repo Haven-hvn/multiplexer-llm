@@ -7,6 +7,7 @@ from typing import Any, Dict
 
 from multiplexer_llm import Multiplexer
 from multiplexer_llm.types import WeightedModel
+from multiplexer_llm.exceptions import ModelSelectionError, MultiplexerError, RateLimitError
 
 
 class MockOpenAIClient:
@@ -58,22 +59,24 @@ class TestMultiplexer:
     """Test cases for the Multiplexer class."""
     
     @pytest.fixture
-    def multiplexer(self):
+    def multiplexer(self, _function_event_loop):
         """Create a fresh multiplexer instance for each test."""
-        return Multiplexer()
+        mux = Multiplexer()
+        yield mux
+        _function_event_loop.run_until_complete(mux.async_reset())
     
     @pytest.fixture
     def mock_client(self):
         """Create a mock OpenAI client."""
         return MockOpenAIClient()
-    
+
     def test_init(self, multiplexer):
         """Test multiplexer initialization."""
         assert len(multiplexer._weighted_models) == 0
         assert len(multiplexer._fallback_models) == 0
         assert len(multiplexer._model_timeouts) == 0
         assert multiplexer.chat is not None
-    
+
     def test_add_model_valid(self, multiplexer, mock_client):
         """Test adding a valid model."""
         multiplexer.add_model(mock_client, 5, "test-model")
@@ -132,19 +135,30 @@ class TestMultiplexer:
     @pytest.mark.asyncio
     async def test_create_completion_success(self, multiplexer, mock_client):
         """Test successful completion creation."""
+        # Create a valid mock response with both choices and model
+        mock_response = {
+            "choices": [{"message": {"content": "Test response"}}],
+            "model": "test-model"
+        }
+        mock_client.chat.completions.set_response(mock_response)
+        
         multiplexer.add_model(mock_client, 5, "test-model")
         
         result = await multiplexer.chat.completions.create(
-            messages=[{"role": "user", "content": "Hello"}]
+            messages=[{"role": "user", "content": "Hello"}],
+            model="test-model"
         )
         
+        # Verify both choices and model
         assert result["choices"][0]["message"]["content"] == "Test response"
+        assert result.get("model") == "test-model"
         assert multiplexer._weighted_models[0].success_count == 1
     
     @pytest.mark.asyncio
     async def test_no_models_error(self, multiplexer):
         """Test error when no models are available."""
-        with pytest.raises(RuntimeError, match="No models available in the multiplexer"):
+        # This should raise ModelSelectionError with specific message
+        with pytest.raises(ModelSelectionError, match="No models available in the multiplexer"):
             await multiplexer.chat.completions.create(
                 messages=[{"role": "user", "content": "Hello"}]
             )
@@ -154,6 +168,12 @@ class TestMultiplexer:
         """Test fallback to next model on rate limit."""
         client1 = MockOpenAIClient("client1")
         client2 = MockOpenAIClient("client2")
+
+        mock_response = {
+            "choices": [{"message": {"content": "Test response"}}],
+            "model": "model2"
+        }
+        client2.chat.completions.set_response(mock_response)
 
         # Set first client to raise rate limit error
         client1.chat.completions.set_error(RateLimitError())
@@ -171,14 +191,20 @@ class TestMultiplexer:
 
         # Check statistics - should have tried model1 first (rate limited) then model2 (success)
         stats = multiplexer.get_stats()
-        assert stats["model1"]["rateLimited"] >= 1
-        assert stats["model2"]["success"] >= 1
+        assert stats["model1"]["rateLimited"] == 1
+        assert stats["model2"]["success"] == 1
 
     @pytest.mark.asyncio
     async def test_fallback_models_activation(self, multiplexer):
         """Test that fallback models are used when all primary models are rate limited."""
         primary_client = MockOpenAIClient("primary")
         fallback_client = MockOpenAIClient("fallback")
+
+        mock_response = {
+            "choices": [{"message": {"content": "Test response"}}],
+            "model": "fallback-model"
+        }
+        fallback_client.chat.completions.set_response(mock_response)
 
         # Set primary client to raise rate limit error
         primary_client.chat.completions.set_error(RateLimitError())
@@ -211,11 +237,12 @@ class TestMultiplexer:
         multiplexer.add_model(client1, 5, "model1")
         multiplexer.add_fallback_model(client2, 3, "model2")
 
-        # Should raise the last rate limit error, not the RuntimeError
-        with pytest.raises(RateLimitError, match="Rate limit exceeded"):
+        # Should raise RateLimitError with correct message
+        with pytest.raises(RateLimitError) as exc_info:
             await multiplexer.chat.completions.create(
                 messages=[{"role": "user", "content": "Hello"}]
             )
+        assert "Rate limit exceeded" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_non_rate_limit_error_propagation(self, multiplexer, mock_client):
@@ -225,7 +252,7 @@ class TestMultiplexer:
 
         multiplexer.add_model(mock_client, 5, "test-model")
 
-        with pytest.raises(ValueError, match="Some other error"):
+        with pytest.raises(MultiplexerError, match="Unexpected error for model test-model: Some other error"):
             await multiplexer.chat.completions.create(
                 messages=[{"role": "user", "content": "Hello"}]
             )
@@ -353,6 +380,13 @@ class TestMultiplexer:
 
         multiplexer.add_model(client1, 5, "model1")
         multiplexer.add_model(client2, 5, "model2")
+
+        mock_response = {
+            "choices": [{"message": {"content": "Test response"}}],
+            "model": "model1"
+        }
+        client1.chat.completions.set_response(mock_response)
+        client2.chat.completions.set_response(mock_response)
 
         # Create multiple concurrent requests
         tasks = []

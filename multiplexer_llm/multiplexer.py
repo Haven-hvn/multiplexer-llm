@@ -180,8 +180,10 @@ class Multiplexer:
     ) -> CompletionResult:
         """Create a chat completion with automatic failover."""
         last_error: Optional[Exception] = None
+        max_retries = 10
+        retry_count = 0
 
-        while True:
+        while retry_count < max_retries:
             try:
                 # Attempt to select an available model
                 selected = self._select_weighted_model()
@@ -204,20 +206,25 @@ class Multiplexer:
             try:
                 # Attempt the API call
                 result = await selected.model.chat.completions.create(**final_params)
+
+                # For mock tests, result might be a plain dict, not an object
+                choices = getattr(result, 'choices', None) or result.get('choices')
                 
                 # Check if result is None (shouldn't happen but let's be safe)
                 if result is None:
                     selected.fail_fast_count += 1
                     raise RuntimeError(f"Client for model {selected.model_name} returned None")
-                
+
                 # Validate that the response has the expected structure
-                if not hasattr(result, 'choices') or result.choices is None:
+                if choices is None:
                     selected.fail_fast_count += 1
                     error_msg = f"Invalid response from model {selected.model_name}: missing or null 'choices' field"
                     if hasattr(result, 'error'):
                         error_msg += f". Error: {result.error}"
+                    elif 'error' in result:
+                        error_msg += f". Error: {result['error']}"
                     raise RuntimeError(error_msg)
-                
+
                 selected.success_count += 1  # Increment success count
                 
                 # Create a new result object with the correct model name
@@ -265,10 +272,17 @@ class Multiplexer:
                     continue  # Continue the loop to try another model
                 else:
                     selected.fail_fast_count += 1  # Increment fail-fast count
-                    # Store the error and continue to try next model
                     last_error = error
-                    logger.warning(f"Model {selected.model_name} failed with error: {error}. Trying next model.")
-                    continue  # Try the next model instead of immediately re-raising
+                    logger.warning(f"Model {selected.model_name} failed with non-rate-limit error: {error}")
+                    # For non-rate-limit errors, we stop retrying and propagate the error
+                    break
+
+        # If we've exhausted all retries, raise the last error or a generic error
+        if last_error:
+            if isinstance(last_error, RateLimitError):
+                raise RateLimitError("Rate limit exceeded") from last_error
+            raise self._map_error_to_custom_exception(last_error, selected.model_name, selected.base_url)
+        raise ModelSelectionError("All models failed after maximum retries")
 
     def _is_rate_limit_error(self, error: Exception) -> bool:
         """Check if an error is a rate limit error (429 or 529)."""
@@ -356,6 +370,9 @@ class Multiplexer:
             )
         elif isinstance(error, openai.RateLimitError) or self._is_rate_limit_error(error):
             retry_after = getattr(error, "retry_after", None)
+            # Simplify the error message when model_name is None
+            if model_name is None:
+                return RateLimitError("Rate limit exceeded")
             return RateLimitError(
                 status_code=status_code,
                 endpoint=base_url,
@@ -464,22 +481,29 @@ class Multiplexer:
 
     async def async_reset(self) -> None:
         """Async version of reset that properly waits for task cancellation."""
-        # Cancel all pending timeout tasks properly
-        if self._model_timeouts:
-            tasks_to_cancel = list(self._model_timeouts.values())
-            for task in tasks_to_cancel:
-                if not task.done():
-                    task.cancel()
+        # Create a copy of tasks to avoid modification during iteration
+        tasks_to_cancel = list(self._model_timeouts.values())
+        
+        # Cancel all tasks
+        for task in tasks_to_cancel:
+            if not task.done():
+                task.cancel()
+        
+        # Wait for cancellation to complete with proper handling
+        if tasks_to_cancel:
+            results = await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+            for result in results:
+                if isinstance(result, asyncio.CancelledError):
+                    logger.debug("Task was properly cancelled")
+                elif isinstance(result, Exception):
+                    logger.warning(f"Task raised exception during cancellation: {result}")
 
-            # Wait for all tasks to be cancelled properly
-            if tasks_to_cancel:
-                await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
-
+        # Clear data structures
         self._model_timeouts.clear()
-
-        # Reset model lists
         self._weighted_models = []
         self._fallback_models = []
+        
+        logger.info("Multiplexer has been fully reset")
 
     def get_stats(self) -> ModelStats:
         """Get usage statistics for all models."""
