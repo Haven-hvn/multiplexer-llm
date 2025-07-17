@@ -26,6 +26,7 @@ from .types import (
 
 # Set up logging
 logger = logging.getLogger(__name__)
+logging.getLogger("openai").setLevel(logging.ERROR)  # Only show critical errors
 
 
 class ChatCompletions:

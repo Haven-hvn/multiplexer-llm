@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: multiplexer-llm
-Version: 0.1.3
+Version: 0.1.5
 Summary: A multiplexer for Large Language Model APIs built on the OpenAI SDK. It combines quotas from multiple models and automatically uses fallback models when the primary models are rate limited.
 Home-page: https://github.com/Haven-hvn/multiplexer-llm
 Author: Havencto
