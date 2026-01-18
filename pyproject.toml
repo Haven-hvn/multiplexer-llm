@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "multiplexer-llm"
-version = "0.1.6"
+version = "0.1.7"
 description = "A multiplexer for Large Language Model APIs built on the OpenAI SDK. It combines quotas from multiple models and automatically uses fallback models when the primary models are rate limited."
 readme = "README.md"
 license = {text = "MIT"}
@@ -39,7 +39,7 @@ classifiers = [
 ]
 requires-python = ">=3.8"
 dependencies = [
-    "openai==4.15.0",
+    "openai==2.15.0",
     "typing-extensions==4.15.0; python_version<'3.10'",
 ]
 
