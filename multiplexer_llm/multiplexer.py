@@ -179,23 +179,50 @@ class Multiplexer:
         model: str = "placeholder",
         **kwargs: Any,
     ) -> CompletionResult:
-        """Create a chat completion with automatic failover."""
+        """Create a chat completion with automatic failover and true overflow routing."""
         last_error: Optional[Exception] = None
-        max_retries = 10
+        max_retries = 100
         retry_count = 0
 
+        # Track which models we've already tried in this request (to avoid infinite loops)
+        tried_models = set()
+
         while retry_count < max_retries:
-            try:
-                # Attempt to select an available model
-                selected = self._select_weighted_model()
-            except ModelSelectionError as selection_error:
-                # If model selection fails (e.g., all rate limited or no models configured)
-                if last_error:
-                    # Map the last error to our custom exceptions and raise it
-                    # We don't have model info here since selection failed, so pass None
-                    raise self._map_error_to_custom_exception(last_error, None, None)
-                # Otherwise, re-throw the selection error (no models available/configured)
-                raise selection_error
+            # Try to find an available model with capacity
+            selected = None
+            skip_models = set(tried_models)  # Don't retry same models
+            
+            for attempt in range(len(self._weighted_models) + len(self._fallback_models)):
+                try:
+                    # Temporarily select a model, then check capacity
+                    candidate = self._select_weighted_model()
+                except ModelSelectionError as selection_error:
+                    # No models available at all
+                    if last_error:
+                        raise self._map_error_to_custom_exception(last_error, None, None)
+                    raise selection_error
+
+                # Skip if we've already tried this model
+                if candidate.model_name in skip_models:
+                    skip_models.add(candidate.model_name)
+                    continue
+
+                # CRITICAL: Use try_reserve_slot for atomic capacity checking and reservation
+                if await candidate.try_reserve_slot():
+                    selected = candidate
+                    break
+                else:
+                    # Model is at capacity - mark as tried and continue to next model
+                    skip_models.add(candidate.model_name)
+                    retry_count += 0.1  # Count as a small retry for this request
+                    continue
+
+            # If no models found with capacity
+            if not selected:
+                # All models are busy - wait a bit and retry
+                await asyncio.sleep(0.01)  # Brief pause, much shorter than before
+                retry_count += 1
+                continue
 
             # Prepare parameters with the selected model name
             final_params = {
@@ -205,7 +232,7 @@ class Multiplexer:
             }
 
             try:
-                # Attempt the API call
+                # Attempt the API call - we already reserved the slot
                 result = await selected.model.chat.completions.create(**final_params)
 
                 # For mock tests, result might be a plain dict, not an object
@@ -214,6 +241,8 @@ class Multiplexer:
                 # Check if result is None (shouldn't happen but let's be safe)
                 if result is None:
                     selected.fail_fast_count += 1
+                    # Release the reserved slot
+                    await selected.decrement_active_requests()
                     raise RuntimeError(f"Client for model {selected.model_name} returned None")
 
                 # Validate that the response has the expected structure
@@ -224,9 +253,13 @@ class Multiplexer:
                         error_msg += f". Error: {result.error}"
                     elif 'error' in result:
                         error_msg += f". Error: {result['error']}"
+                    # Release the reserved slot
+                    await selected.decrement_active_requests()
                     raise RuntimeError(error_msg)
 
                 selected.success_count += 1  # Increment success count
+                # Release the reserved slot on success
+                await selected.decrement_active_requests()
                 
                 # Create a new result object with the correct model name
                 # We need to handle this carefully since Pydantic models are immutable
@@ -235,19 +268,41 @@ class Multiplexer:
                     if hasattr(result, 'model_copy'):
                         # Pydantic v2 style
                         updated_result = result.model_copy(update={'model': selected.model_name})
-                    elif hasattr(result, 'copy'):
-                        # Pydantic v1 style
-                        updated_result = result.copy(update={'model': selected.model_name})
+                    elif hasattr(result, 'copy') and callable(getattr(result, 'copy')):
+                        # Pydantic v1 style - check if copy accepts arguments
+                        try:
+                            # Try with update parameter first
+                            updated_result = result.copy(update={'model': selected.model_name})
+                        except TypeError:
+                            # Fallback: try direct assignment for plain dicts and simple objects
+                            if isinstance(result, dict):
+                                updated_result = result.copy()
+                                updated_result['model'] = selected.model_name
+                            else:
+                                # For objects, try to set the attribute directly
+                                updated_result = result
+                                try:
+                                    result.model = selected.model_name
+                                except AttributeError:
+                                    # If we can't set the attribute, return original result
+                                    return result
                     else:
                         # Fallback: try direct assignment (might work for some objects)
                         updated_result = result
-                        updated_result.model = selected.model_name
+                        try:
+                            result.model = selected.model_name
+                        except AttributeError:
+                            # If we can't set the attribute, return original result
+                            return result
                     return updated_result
                 except Exception as copy_error:
                     # If we can't update the model name, log it but still return the result
                     logger.warning(f"Could not update model name for {selected.model_name}: {copy_error}")
                     return result
             except Exception as error:
+                # Release the reserved slot on any exception
+                await selected.decrement_active_requests()
+                
                 # Check if it's a rate limit error (429 or 529)
                 if self._is_rate_limit_error(error):
                     logger.warning(
@@ -258,6 +313,7 @@ class Multiplexer:
                         selected.model_name, 60 * 1000
                     )  # Disable for 1 minute
                     last_error = error  # Store the 429 error
+                    tried_models.add(selected.model_name)  # Don't retry same model
                     continue  # Continue the loop to try another model
                 elif self._is_persistent_error(error):
                     # Handle persistent errors (connection issues, service unavailable)
@@ -270,6 +326,7 @@ class Multiplexer:
                         selected.model_name, 15 * 1000
                     )  # Disable for 15 seconds
                     last_error = error
+                    tried_models.add(selected.model_name)  # Don't retry same model
                     continue  # Continue the loop to try another model
                 else:
                     selected.fail_fast_count += 1  # Increment fail-fast count
@@ -421,12 +478,15 @@ class Multiplexer:
         weight: int,
         model_name: str,
         base_url: Optional[str] = None,
+        max_concurrent: Optional[int] = None,
     ) -> None:
         """Add a primary model to the multiplexer."""
         if not isinstance(weight, int) or weight <= 0:
             raise ValueError("Weight must be a positive integer.")
         if not model_name or not isinstance(model_name, str):
             raise ValueError("model_name must be a non-empty string.")
+        if max_concurrent is not None and (not isinstance(max_concurrent, int) or max_concurrent < 0):
+            raise ValueError("max_concurrent must be a non-negative integer or None.")
 
         # Check for duplicate model names
         all_models = self._weighted_models + self._fallback_models
@@ -438,7 +498,7 @@ class Multiplexer:
             return
 
         # Add model with disabled_until initialized to None and stats to 0
-        weighted_model = WeightedModel(model, weight, model_name, base_url)
+        weighted_model = WeightedModel(model, weight, model_name, base_url, max_concurrent)
         self._weighted_models.append(weighted_model)
 
     def add_fallback_model(
@@ -447,12 +507,15 @@ class Multiplexer:
         weight: int,
         model_name: str,
         base_url: Optional[str] = None,
+        max_concurrent: Optional[int] = None,
     ) -> None:
         """Add a fallback model to the multiplexer."""
         if not isinstance(weight, int) or weight <= 0:
             raise ValueError("Weight must be a positive integer.")
         if not model_name or not isinstance(model_name, str):
             raise ValueError("model_name must be a non-empty string.")
+        if max_concurrent is not None and (not isinstance(max_concurrent, int) or max_concurrent < 0):
+            raise ValueError("max_concurrent must be a non-negative integer or None.")
 
         # Check for duplicate model names
         all_models = self._weighted_models + self._fallback_models
@@ -464,7 +527,7 @@ class Multiplexer:
             return
 
         # Add fallback model with disabled_until initialized to None and stats to 0
-        weighted_model = WeightedModel(model, weight, model_name, base_url)
+        weighted_model = WeightedModel(model, weight, model_name, base_url, max_concurrent)
         self._fallback_models.append(weighted_model)
 
     def reset(self) -> None:
@@ -527,3 +590,10 @@ class Multiplexer:
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Async context manager exit - properly cleanup resources."""
         await self.async_reset()
+
+
+class CapacityError(MultiplexerError):
+    """Exception raised when a model is at its concurrency capacity."""
+    
+    def __init__(self, message: str = "Model is at capacity") -> None:
+        super().__init__(message)

@@ -1,5 +1,6 @@
 """Type definitions for the model multiplexer package."""
 
+import asyncio
 import sys
 from typing import Any, Dict, Optional, Protocol, Union
 
@@ -45,7 +46,7 @@ class CompletionsProtocol(Protocol):
         messages: Any,
         model: str,
         **kwargs: Any,
-    ) -> Union[ChatCompletion, Any]:
+    ) -> Union[ChatCompletion, ChatCompletionChunk, Any]:
         """Create a chat completion."""
         ...
 
@@ -59,6 +60,7 @@ class WeightedModel:
         weight: int,
         model_name: str,
         base_url: Optional[str] = None,
+        max_concurrent: Optional[int] = None,
     ) -> None:
         self.model = model
         self.weight = weight
@@ -66,10 +68,51 @@ class WeightedModel:
         self.base_url = base_url
         # Timestamp until which the model is disabled due to rate limiting
         self.disabled_until: Optional[float] = None
+        # Maximum number of concurrent requests (None or 0 = unlimited)
+        self.max_concurrent: Optional[int] = max_concurrent
+        # Current number of active requests (thread-safe)
+        self._active_requests: int = 0
+        # Lock for thread-safe active request tracking
+        self._request_lock = asyncio.Lock()
         # Statistics
         self.success_count = 0
         self.rate_limit_count = 0
         self.fail_fast_count = 0
+
+    async def can_accept_request(self) -> bool:
+        """Check if the model can accept a new request based on concurrency limits."""
+        if self.max_concurrent is None or self.max_concurrent <= 0:
+            return True
+        
+        async with self._request_lock:
+            return self._active_requests < self.max_concurrent
+
+    async def increment_active_requests(self) -> None:
+        """Increment the active request count (should be called after can_accept_request returns True)."""
+        if self.max_concurrent is None or self.max_concurrent <= 0:
+            return
+        
+        async with self._request_lock:
+            self._active_requests += 1
+
+    async def decrement_active_requests(self) -> None:
+        """Decrement the active request count."""
+        if self.max_concurrent is None or self.max_concurrent <= 0:
+            return
+        
+        async with self._request_lock:
+            self._active_requests = max(0, self._active_requests - 1)
+
+    async def try_reserve_slot(self) -> bool:
+        """Atomically check and reserve a concurrency slot. Returns True if reserved, False if at capacity."""
+        if self.max_concurrent is None or self.max_concurrent <= 0:
+            return True
+        
+        async with self._request_lock:
+            if self._active_requests < self.max_concurrent:
+                self._active_requests += 1
+                return True
+            return False
 
 
 # Type aliases
