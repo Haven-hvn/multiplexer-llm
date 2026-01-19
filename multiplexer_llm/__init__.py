@@ -33,7 +33,7 @@ from .exceptions import (
     AllModelsFailedError,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __author__ = "Havencto"
 __email__ = "officialhavennetwork@gmail.com"
 
