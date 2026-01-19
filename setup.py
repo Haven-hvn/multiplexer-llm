@@ -11,7 +11,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 
 setup(
     name="multiplexer-llm",
-    version="0.2.1",
+    version="0.2.2",
     author="Havencto",
     author_email="officialhavennetwork@gmail.com",
     description="A multiplexer for Large Language Model APIs built on the OpenAI SDK. It combines quotas from multiple models and automatically uses fallback models when the primary models are rate limited.",

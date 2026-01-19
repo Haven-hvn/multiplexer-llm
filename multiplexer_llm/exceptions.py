@@ -111,3 +111,8 @@ class AllModelsFailedError(MultiplexerError):
     
     def __init__(self, message: str = "All models have failed") -> None:
         super().__init__(message)
+        # Debug instrumentation for exit status 120 investigation
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"[DEBUG_MULTIPLEXER] AllModelsFailedError raised: {message}")
+        logger.debug(f"[DEBUG_MULTIPLEXER] This may indicate complete system failure")

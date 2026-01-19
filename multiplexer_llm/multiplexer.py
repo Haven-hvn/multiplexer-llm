@@ -4,6 +4,7 @@ import asyncio
 import logging
 import random
 import time
+import traceback
 from typing import Any, Dict, List, Optional, Union
 
 from .exceptions import (
@@ -27,6 +28,9 @@ from .types import (
 # Set up logging
 logger = logging.getLogger(__name__)
 # logging.getLogger("openai").setLevel(logging.ERROR)  # Only show critical errors
+
+# Debug instrumentation for exit status 120 investigation
+logger.debug("[DEBUG_MULTIPLEXER] Multiplexer module loaded")
 
 
 class ChatCompletions:
@@ -109,10 +113,12 @@ class Multiplexer:
         if selected:
             return selected
         
-        # Check if there are models but all disabled
-        if self._weighted_models or self._fallback_models:
-            raise ModelSelectionError("All models are temporarily rate limited.")
-        raise ModelSelectionError("No models available in the multiplexer.")
+                # Check if there are models but all disabled
+                if self._weighted_models or self._fallback_models:
+                    # Debug instrumentation for exit status 120 investigation
+                    logger.debug(f"[DEBUG_MULTIPLEXER] All models temporarily rate limited, cannot fulfill request")
+                    raise ModelSelectionError("All models are temporarily rate limited.")
+                raise ModelSelectionError("No models available in the multiplexer.")
     
     async def _disable_model_temporarily(
         self, model_name: str, duration_ms: float
@@ -183,6 +189,9 @@ class Multiplexer:
         last_error: Optional[Exception] = None
         max_retries = 100
         retry_count = 0
+        
+        # Debug instrumentation
+        logger.debug(f"[DEBUG_MULTIPLEXER] Creating completion, messages count: {len(messages) if hasattr(messages, '__len__') else 'unknown'}")
 
         # Track which models we've already tried in this request (to avoid infinite loops)
         tried_models = set()
