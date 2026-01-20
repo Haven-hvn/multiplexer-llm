@@ -113,12 +113,12 @@ class Multiplexer:
         if selected:
             return selected
         
-                # Check if there are models but all disabled
-                if self._weighted_models or self._fallback_models:
-                    # Debug instrumentation for exit status 120 investigation
-                    logger.debug(f"[DEBUG_MULTIPLEXER] All models temporarily rate limited, cannot fulfill request")
-                    raise ModelSelectionError("All models are temporarily rate limited.")
-                raise ModelSelectionError("No models available in the multiplexer.")
+        # Check if there are models but all disabled
+        if self._weighted_models or self._fallback_models:
+            # Debug instrumentation for exit status 120 investigation
+            logger.debug(f"[DEBUG_MULTIPLEXER] All models temporarily rate limited, cannot fulfill request")
+            raise ModelSelectionError("All models are temporarily rate limited.")
+        raise ModelSelectionError("No models available in the multiplexer.")
     
     async def _disable_model_temporarily(
         self, model_name: str, duration_ms: float
