@@ -1,43 +1,31 @@
-Metadata-Version: 2.4
+Metadata-Version: 2.1
 Name: multiplexer-llm
 Version: 0.2.3
 Summary: A multiplexer for Large Language Model APIs built on the OpenAI SDK. It combines quotas from multiple models and automatically uses fallback models when the primary models are rate limited.
 Home-page: https://github.com/Haven-hvn/multiplexer-llm
 Author: Havencto
-Author-email: havencto <officialhavennetwork@gmail.com>
-License: MIT
-Project-URL: Homepage, https://github.com/Haven-hvn/multiplexer-llm
-Project-URL: Repository, https://github.com/Haven-hvn/multiplexer-llm
-Project-URL: Documentation, https://github.com/Haven-hvn/multiplexer-llm#readme
+Author-email: officialhavennetwork@gmail.com
+License: UNKNOWN
 Project-URL: Bug Reports, https://github.com/Haven-hvn/multiplexer-llm/issues
+Project-URL: Source, https://github.com/Haven-hvn/multiplexer-llm
+Project-URL: Documentation, https://github.com/Haven-hvn/multiplexer-llm#readme
 Keywords: openai,multiplexer,llm,rate-limit,api,ai,machine-learning,chatgpt,claude,gemini
-Classifier: Development Status :: 4 - Beta
+Platform: UNKNOWN
+Classifier: Development Status ::4 - Beta
 Classifier: Intended Audience :: Developers
 Classifier: License :: OSI Approved :: MIT License
 Classifier: Operating System :: OS Independent
-Classifier: Programming Language :: Python :: 3
-Classifier: Programming Language :: Python :: 3.8
-Classifier: Programming Language :: Python :: 3.9
-Classifier: Programming Language :: Python :: 3.10
-Classifier: Programming Language :: Python :: 3.11
-Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python ::3
+Classifier: Programming Language :: Python ::3.8
+Classifier: Programming Language :: Python ::3.9
+Classifier: Programming Language :: Python ::3.10
+Classifier: Programming Language :: Python ::3.11
+Classifier: Programming Language :: Python ::3.12
 Classifier: Topic :: Software Development :: Libraries :: Python Modules
 Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
 Requires-Python: >=3.8
 Description-Content-Type: text/markdown
-Requires-Dist: openai==2.15.0
-Requires-Dist: typing-extensions==4.15.0; python_version < "3.10"
 Provides-Extra: dev
-Requires-Dist: pytest>=7.0.0; extra == "dev"
-Requires-Dist: pytest-asyncio>=0.21.0; extra == "dev"
-Requires-Dist: pytest-mock>=3.10.0; extra == "dev"
-Requires-Dist: black>=23.0.0; extra == "dev"
-Requires-Dist: isort>=5.12.0; extra == "dev"
-Requires-Dist: mypy>=1.0.0; extra == "dev"
-Requires-Dist: flake8>=6.0.0; extra == "dev"
-Dynamic: author
-Dynamic: home-page
-Dynamic: requires-python
 
 # Multiplexer LLM (Python)
 
@@ -171,3 +159,5 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## About Haven Network
 
 [Haven Network](https://github.com/haven-hvn) builds open-source tools to help online communities produce high-quality data for multi-modal AI, with a strong focus on local inference and data privacy.
+
+

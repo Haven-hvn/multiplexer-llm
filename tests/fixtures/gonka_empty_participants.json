@@ -1,0 +1,15 @@
+{
+  "active_participants": {
+    "participants": [],
+    "epoch_group_id": 7,
+    "poc_start_block_height": 1000,
+    "effective_block_height": 1050,
+    "created_at_block_height": 999,
+    "epoch_id": 42
+  },
+  "addresses": [],
+  "validators": [],
+  "block": {
+    "app_hash": "a1b2c3d4e5f6789012345678abcdef0123456789abcdef0123456789abcdef01"
+  }
+}
