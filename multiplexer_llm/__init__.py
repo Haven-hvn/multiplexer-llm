@@ -20,6 +20,7 @@ from .types import (
     CompletionResult,
     ModelStats,
     OpenAICompatibleClient,
+    SystemOneResult,
     WeightedModel,
 )
 from .exceptions import (
@@ -46,6 +47,7 @@ __all__ = [
     "ModelStats",
     "CompletionOptions",
     "CompletionResult",
+    "SystemOneResult",
     # Custom exceptions
     "MultiplexerError",
     "ModelSelectionError",

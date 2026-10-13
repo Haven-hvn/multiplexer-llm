@@ -84,6 +84,64 @@ async def main():
 asyncio.run(main())
 ```
 
+## System One (Jev `/v1/systemone`) support
+
+Alongside chat completions, the multiplexer routes requests that speak the
+**Jev `/v1/systemone` wire contract** — the standard System One API for atomic
+`noul` / `choice` / `score` decisions. Same weighted selection, capacity slots,
+and automatic failover as chat; only the payload shape changes. Point the
+endpoint clients at any server speaking the contract (e.g. a self-hosted
+[Tachyone](https://github.com/munod/tachyone)) — `base_url` should include the
+OpenAI-style `/v1` prefix:
+
+```python
+async def main():
+    model1 = AsyncOpenAI(
+        api_key=os.getenv("SYSTEMONE_API_KEY"),
+        base_url="https://api.model1.com/v1",
+    )
+
+    async with Multiplexer() as multiplexer:
+        multiplexer.add_model(model1, 5, "systemone-latest")
+
+        result = await multiplexer.systemone.create(
+            state="refund please",
+            questions={
+                "greeting": {
+                    "type": "noul",
+                    "instructions": "Is this a greeting?",
+                },
+                "topic": {
+                    "type": "choice",
+                    "instructions": "Pick a category.",
+                    "criteria": {"billing": "billing issue", "other": None},
+                },
+                "sentiment": {
+                    "type": "score",
+                    "instructions": "Rate the sentiment.",
+                    "criteria": ["very negative", "negative", "neutral", "positive", "very positive"],
+                },
+            },
+        )
+
+        # Answers come back keyed by question id, in the order asked
+        print(result["answers"]["greeting"]["noul"])   # 0.97
+        print(result["answers"]["topic"]["choice"])    # "billing"
+        print(result["answers"]["sentiment"]["score"]) # 3.4
+        print(result["usage"])                          # {"input_tokens": ..., "output_tokens": ...}
+```
+
+Notes:
+
+- `model` defaults to `"placeholder"` and is **overridden by the selected
+  endpoint's registered name**, exactly like `chat.completions.create`.
+- The path defaults to `/systemone` and is merged onto each client's
+  `base_url`; pass `path="/v1/systemone"` if your base_url does not already
+  carry the `/v1` prefix.
+- Failover matches the Jev error contract: `429` and `529` disable the endpoint
+  for 60s and try the next one; connection errors and other `5xx` disable for
+  15s. `401`/`422` propagate immediately.
+
 ### How Primary and Fallback Models Work
 
 The multiplexer operates with a **two-tier system**:

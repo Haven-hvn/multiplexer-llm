@@ -5,7 +5,7 @@ import logging
 import random
 import time
 import traceback
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
 from .exceptions import (
     AllModelsFailedError,
@@ -22,6 +22,7 @@ from .types import (
     CompletionResult,
     ModelStats,
     OpenAICompatibleClient,
+    SystemOneResult,
     WeightedModel,
 )
 
@@ -31,6 +32,12 @@ logger = logging.getLogger(__name__)
 
 # Debug instrumentation for exit status 120 investigation
 logger.debug("[DEBUG_MULTIPLEXER] Multiplexer module loaded")
+
+#: Default path for the Jev ``/v1/systemone`` contract. Endpoint clients are
+#: expected to carry a base_url that already includes the OpenAI-style ``/v1``
+#: prefix (e.g. ``"https://api.model1.com/v1"``); this path is merged onto it
+#: by the OpenAI SDK exactly like any relative request path.
+SYSTEMONE_PATH = "/systemone"
 
 
 class ChatCompletions:
@@ -61,6 +68,52 @@ class Chat:
         self.completions = ChatCompletions(multiplexer)
 
 
+class SystemOne:
+    """System One interface for the multiplexer.
+
+    Speaks the Jev ``/v1/systemone`` contract: one request carries a ``state``
+    plus a map of atomic questions (``noul`` / ``choice`` / ``score``) and the
+    response answers each question by id. Requests are routed through the same
+    weighted selection, capacity slots, and automatic failover as chat
+    completions.
+    """
+
+    def __init__(self, multiplexer: "Multiplexer") -> None:
+        self._multiplexer = multiplexer
+
+    async def create(
+        self,
+        *,
+        state: Any,
+        questions: Dict[str, Any],
+        model: str = "placeholder",
+        path: str = SYSTEMONE_PATH,
+        **kwargs: Any,
+    ) -> SystemOneResult:
+        """Ask atomic questions about a state via ``/v1/systemone``.
+
+        Args:
+            state: The subject being judged (plain text or structured JSON).
+            questions: Map of question id -> question body. Ids are echoed in
+                the response's ``answers``.
+            model: Overridden by the selected endpoint's registered model
+                name, mirroring ``chat.completions.create``.
+            path: Endpoint path, merged onto each client's base_url. Defaults
+                to ``/systemone`` (assumes base_url includes the ``/v1`` prefix).
+            **kwargs: Additional request body fields (e.g. ``choice_head``).
+
+        Returns:
+            The parsed response body (``model``, ``answers``, ``usage``).
+        """
+        return await self._multiplexer._create_systemone(
+            state=state,
+            model=model,
+            questions=questions,
+            path=path,
+            **kwargs,
+        )
+
+
 class Multiplexer:
     """
     A multiplexer for Large Language Model APIs that combines quotas from multiple
@@ -72,6 +125,7 @@ class Multiplexer:
         self._fallback_models: List[WeightedModel] = []
         self._model_timeouts: Dict[str, asyncio.Task[None]] = {}
         self.chat = Chat(self)
+        self.systemone = SystemOne(self)
     
     def _select_from_pool(self, pool: List[WeightedModel]) -> Optional[WeightedModel]:
         """Select a model from a pool using weighted random selection."""
@@ -178,29 +232,32 @@ class Multiplexer:
             f"{duration_ms / 1000.0}s."
         )
 
-    async def _create_completion(
+    async def _dispatch_with_failover(
         self,
-        *,
-        messages: Any,
-        model: str = "placeholder",
-        **kwargs: Any,
-    ) -> CompletionResult:
-        """Create a chat completion with automatic failover and true overflow routing."""
+        call: Callable[[WeightedModel], Awaitable[Any]],
+        on_success: Callable[[Any, WeightedModel], Awaitable[Any]],
+    ) -> Any:
+        """Route one request across the model pool with automatic failover.
+
+        Shared by ``chat.completions.create`` and ``systemone.create``: weighted
+        selection, atomic capacity reservation, temporary disabling, and error
+        mapping all live here. ``call`` performs the endpoint request;
+        ``on_success`` validates the result and returns it (raising to reject
+        an invalid response, which is handled like any other error).
+        """
         last_error: Optional[Exception] = None
         max_retries = 100
         retry_count = 0
-        
-        # Debug instrumentation
-        logger.debug(f"[DEBUG_MULTIPLEXER] Creating completion, messages count: {len(messages) if hasattr(messages, '__len__') else 'unknown'}")
 
         # Track which models we've already tried in this request (to avoid infinite loops)
         tried_models = set()
+        selected: Optional[WeightedModel] = None
 
         while retry_count < max_retries:
             # Try to find an available model with capacity
             selected = None
             skip_models = set(tried_models)  # Don't retry same models
-            
+
             for attempt in range(len(self._weighted_models) + len(self._fallback_models)):
                 try:
                     # Temporarily select a model, then check capacity
@@ -233,85 +290,14 @@ class Multiplexer:
                 retry_count += 1
                 continue
 
-            # Prepare parameters with the selected model name
-            final_params = {
-                "messages": messages,
-                "model": selected.model_name,  # Use the selected model's name
-                **kwargs,
-            }
-
             try:
                 # Attempt the API call - we already reserved the slot
-                result = await selected.model.chat.completions.create(**final_params)
-
-                # For mock tests, result might be a plain dict, not an object
-                choices = getattr(result, 'choices', None) or result.get('choices')
-                
-                # Check if result is None (shouldn't happen but let's be safe)
-                if result is None:
-                    selected.fail_fast_count += 1
-                    # Release the reserved slot
-                    await selected.decrement_active_requests()
-                    raise RuntimeError(f"Client for model {selected.model_name} returned None")
-
-                # Validate that the response has the expected structure
-                if choices is None:
-                    selected.fail_fast_count += 1
-                    error_msg = f"Invalid response from model {selected.model_name}: missing or null 'choices' field"
-                    if hasattr(result, 'error'):
-                        error_msg += f". Error: {result.error}"
-                    elif 'error' in result:
-                        error_msg += f". Error: {result['error']}"
-                    # Release the reserved slot
-                    await selected.decrement_active_requests()
-                    raise RuntimeError(error_msg)
-
-                selected.success_count += 1  # Increment success count
-                # Release the reserved slot on success
-                await selected.decrement_active_requests()
-                
-                # Create a new result object with the correct model name
-                # We need to handle this carefully since Pydantic models are immutable
-                try:
-                    # Try to create a copy with the updated model name
-                    if hasattr(result, 'model_copy'):
-                        # Pydantic v2 style
-                        updated_result = result.model_copy(update={'model': selected.model_name})
-                    elif hasattr(result, 'copy') and callable(getattr(result, 'copy')):
-                        # Pydantic v1 style - check if copy accepts arguments
-                        try:
-                            # Try with update parameter first
-                            updated_result = result.copy(update={'model': selected.model_name})
-                        except TypeError:
-                            # Fallback: try direct assignment for plain dicts and simple objects
-                            if isinstance(result, dict):
-                                updated_result = result.copy()
-                                updated_result['model'] = selected.model_name
-                            else:
-                                # For objects, try to set the attribute directly
-                                updated_result = result
-                                try:
-                                    result.model = selected.model_name
-                                except AttributeError:
-                                    # If we can't set the attribute, return original result
-                                    return result
-                    else:
-                        # Fallback: try direct assignment (might work for some objects)
-                        updated_result = result
-                        try:
-                            result.model = selected.model_name
-                        except AttributeError:
-                            # If we can't set the attribute, return original result
-                            return result
-                    return updated_result
-                except Exception as copy_error:
-                    # If we can't update the model name, log it but still return the result
-                    logger.warning(f"Could not update model name for {selected.model_name}: {copy_error}")
-                    return result
+                result = await call(selected)
+                return await on_success(result, selected)
             except Exception as error:
                 # Release the reserved slot on any exception
                 await selected.decrement_active_requests()
-                
+
                 # Check if it's a rate limit error (429 or 529)
                 if self._is_rate_limit_error(error):
                     logger.warning(
@@ -348,8 +334,166 @@ class Multiplexer:
         if last_error:
             if isinstance(last_error, RateLimitError):
                 raise RateLimitError("Rate limit exceeded") from last_error
-            raise self._map_error_to_custom_exception(last_error, selected.model_name, selected.base_url)
+            raise self._map_error_to_custom_exception(
+                last_error,
+                selected.model_name if selected else None,
+                selected.base_url if selected else None,
+            )
         raise ModelSelectionError("All models failed after maximum retries")
+
+    async def _create_completion(
+        self,
+        *,
+        messages: Any,
+        model: str = "placeholder",
+        **kwargs: Any,
+    ) -> CompletionResult:
+        """Create a chat completion with automatic failover and true overflow routing."""
+        # Debug instrumentation
+        logger.debug(f"[DEBUG_MULTIPLEXER] Creating completion, messages count: {len(messages) if hasattr(messages, '__len__') else 'unknown'}")
+
+        async def call(selected: WeightedModel) -> Any:
+            # Prepare parameters with the selected model name
+            return await selected.model.chat.completions.create(
+                messages=messages,
+                model=selected.model_name,  # Use the selected model's name
+                **kwargs,
+            )
+
+        return await self._dispatch_with_failover(call=call, on_success=self._accept_chat_result)
+
+    async def _accept_chat_result(self, result: Any, selected: WeightedModel) -> Any:
+        """Validate a chat completion and stamp it with the selected model name."""
+        # For mock tests, result might be a plain dict, not an object
+        choices = getattr(result, 'choices', None) or result.get('choices')
+
+        # Check if result is None (shouldn't happen but let's be safe)
+        if result is None:
+            selected.fail_fast_count += 1
+            # Release the reserved slot
+            await selected.decrement_active_requests()
+            raise RuntimeError(f"Client for model {selected.model_name} returned None")
+
+        # Validate that the response has the expected structure
+        if choices is None:
+            selected.fail_fast_count += 1
+            error_msg = f"Invalid response from model {selected.model_name}: missing or null 'choices' field"
+            if hasattr(result, 'error'):
+                error_msg += f". Error: {result.error}"
+            elif 'error' in result:
+                error_msg += f". Error: {result['error']}"
+            # Release the reserved slot
+            await selected.decrement_active_requests()
+            raise RuntimeError(error_msg)
+
+        selected.success_count += 1  # Increment success count
+        # Release the reserved slot on success
+        await selected.decrement_active_requests()
+
+        # Create a new result object with the correct model name
+        return self._with_model_name(result, selected.model_name)
+
+    async def _create_systemone(
+        self,
+        *,
+        state: Any,
+        model: str = "placeholder",
+        questions: Dict[str, Any],
+        path: str = SYSTEMONE_PATH,
+        **kwargs: Any,
+    ) -> SystemOneResult:
+        """Create a /v1/systemone response with automatic failover and true overflow routing."""
+        # Debug instrumentation
+        logger.debug(f"[DEBUG_MULTIPLEXER] Creating systemone request with {len(questions)} questions")
+
+        async def call(selected: WeightedModel) -> Any:
+            body: Dict[str, Any] = {
+                "state": state,
+                # Use the selected model's name, mirroring chat completions
+                "model": selected.model_name,
+                "questions": questions,
+            }
+            # Extra fields (e.g. the ADR-0016 ``choice_head`` hint) ride along.
+            body.update(kwargs)
+            return await selected.model.post(path, cast_to=dict, body=body)
+
+        return await self._dispatch_with_failover(call=call, on_success=self._accept_systemone_result)
+
+    async def _accept_systemone_result(
+        self, result: Any, selected: WeightedModel
+    ) -> SystemOneResult:
+        """Validate a /v1/systemone response and stamp it with the selected model name."""
+        # Check if result is None (shouldn't happen but let's be safe)
+        if result is None:
+            selected.fail_fast_count += 1
+            # Release the reserved slot
+            await selected.decrement_active_requests()
+            raise RuntimeError(f"Client for model {selected.model_name} returned None")
+
+        answers = result.get("answers") if isinstance(result, dict) else getattr(result, "answers", None)
+
+        # Validate that the response has the expected structure
+        if answers is None:
+            selected.fail_fast_count += 1
+            error_msg = f"Invalid response from model {selected.model_name}: missing or null 'answers' field"
+            error = result.get("error") if isinstance(result, dict) else getattr(result, "error", None)
+            if error is not None:
+                error_msg += f". Error: {error}"
+            # Release the reserved slot
+            await selected.decrement_active_requests()
+            raise RuntimeError(error_msg)
+
+        selected.success_count += 1  # Increment success count
+        # Release the reserved slot on success
+        await selected.decrement_active_requests()
+
+        # Create a new result object with the correct model name
+        return self._with_model_name(result, selected.model_name)
+
+    @staticmethod
+    def _with_model_name(result: Any, model_name: str) -> Any:
+        """Return ``result`` with its ``model`` field set to ``model_name``.
+
+        Handles pydantic v1/v2 objects and plain dicts; falls back to the
+        original result if the model name cannot be rewritten.
+        """
+        # We need to handle this carefully since Pydantic models are immutable
+        try:
+            # Try to create a copy with the updated model name
+            if hasattr(result, 'model_copy'):
+                # Pydantic v2 style
+                return result.model_copy(update={'model': model_name})
+            elif hasattr(result, 'copy') and callable(getattr(result, 'copy')):
+                # Pydantic v1 style - check if copy accepts arguments
+                try:
+                    # Try with update parameter first
+                    return result.copy(update={'model': model_name})
+                except TypeError:
+                    # Fallback: try direct assignment for plain dicts and simple objects
+                    if isinstance(result, dict):
+                        updated_result = result.copy()
+                        updated_result['model'] = model_name
+                        return updated_result
+                    else:
+                        # For objects, try to set the attribute directly
+                        try:
+                            result.model = model_name
+                        except AttributeError:
+                            # If we can't set the attribute, return original result
+                            return result
+                        return result
+            else:
+                # Fallback: try direct assignment (might work for some objects)
+                try:
+                    result.model = model_name
+                except AttributeError:
+                    # If we can't set the attribute, return original result
+                    return result
+                return result
+        except Exception as copy_error:
+            # If we can't update the model name, log it but still return the result
+            logger.warning(f"Could not update model name for {model_name}: {copy_error}")
+            return result
 
     def _is_rate_limit_error(self, error: Exception) -> bool:
         """Check if an error is a rate limit error (429 or 529)."""

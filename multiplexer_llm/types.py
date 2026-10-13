@@ -27,6 +27,10 @@ class OpenAICompatibleClient(Protocol):
         """Chat completions interface."""
         ...
 
+    async def post(self, path: str, *, body: Any = None, cast_to: Any = dict, **kwargs: Any) -> Any:
+        """Generic request interface for custom endpoints (e.g. ``/systemone``)."""
+        ...
+
 
 class ChatCompletionsProtocol(Protocol):
     """Protocol for chat completions interface."""
@@ -124,3 +128,6 @@ CompletionOptions: TypeAlias = Dict[str, Any]
 
 CompletionResult: TypeAlias = Union[ChatCompletion, ChatCompletionChunk, Any]
 """Type alias for completion results."""
+
+SystemOneResult: TypeAlias = Dict[str, Any]
+"""Type alias for ``/v1/systemone`` response bodies (``model``, ``answers``, ``usage``)."""
