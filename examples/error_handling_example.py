@@ -28,7 +28,7 @@ from multiplexer_llm import (
 try:
     from openai import AsyncOpenAI
 except ImportError:
-    print("OpenAI package is required. Install it with: pip install openai>=1.0.0")
+    print("OpenAI package is required. Install it with: pip install openai==3.29.0")
     sys.exit(1)
 
 

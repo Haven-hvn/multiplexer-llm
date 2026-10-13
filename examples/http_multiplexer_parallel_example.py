@@ -41,9 +41,9 @@ from multiplexer_llm import Multiplexer
 
 try:
     from openai import AsyncOpenAI
-    import httpx
+    import httpx2
 except ImportError:
-    print("Required packages missing. Install with: pip install openai>=1.0.0 httpx")
+    print("Required packages missing. Install with: pip install openai==3.29.0 httpx2")
     sys.exit(1)
 
 
@@ -77,7 +77,7 @@ class HighPerformanceMultiplexer:
         
     async def __aenter__(self):
         # Configure HTTP client with connection pooling
-        limits = httpx.Limits(
+        limits = httpx2.Limits(
             max_keepalive_connections=self.connection_pool_size,
             max_connections=self.connection_pool_size * 2,
             keepalive_expiry=30.0
@@ -97,9 +97,9 @@ async def test_endpoint_concurrent(base_url: str, api_key: str = "", timeout: fl
     start_time = time.time()
     try:
         # Use custom HTTP client with optimized settings
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout),
-            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5)
+        async with httpx2.AsyncClient(
+            timeout=httpx2.Timeout(timeout),
+            limits=httpx2.Limits(max_connections=10, max_keepalive_connections=5)
         ) as http_client:
             
             client = AsyncOpenAI(

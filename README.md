@@ -40,7 +40,7 @@ Multiple Models:     [Model A: 10K] + [Model B: 50K] + [Model C: 15K] = 75,000 R
 pip install multiplexer-llm
 ```
 
-The package requires Python 3.8+ and automatically installs the OpenAI Python SDK as a dependency.
+The package requires Python 3.10+ and automatically installs the OpenAI Python SDK as a dependency.
 
 ## Quick Start
 

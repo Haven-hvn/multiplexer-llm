@@ -8,7 +8,7 @@ multiplexer-llm package, showing how to:
 1. Set per-endpoint concurrency limits
 2. Preserve weighted distribution while respecting capacity
 3. Handle overflow gracefully when endpoints are busy
-4. Configure the httpx client with high connection limits since
+4. Configure the httpx2 client with high connection limits since
    concurrency is now managed at the application layer
 
 Key Benefits:

@@ -1,13 +1,7 @@
 """Type definitions for the model multiplexer package."""
 
 import asyncio
-import sys
-from typing import Any, Dict, Optional, Protocol, Union
-
-if sys.version_info >= (3, 10):
-    from typing import TypeAlias
-else:
-    from typing_extensions import TypeAlias
+from typing import Any, Dict, Optional, Protocol, TypeAlias, Union
 
 # Import OpenAI types
 try:
@@ -15,7 +9,7 @@ try:
     from openai.types.chat import ChatCompletion, ChatCompletionChunk, CompletionCreateParams
 except ImportError:
     raise ImportError(
-        "OpenAI package is required. Install it with: pip install openai>=1.0.0"
+        "OpenAI package is required. Install it with: pip install openai==3.29.0"
     )
 
 

@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: multiplexer-llm
-Version: 0.3.0
+Version: 0.4.0
 Summary: A multiplexer for Large Language Model APIs built on the OpenAI SDK. It combines quotas from multiple models and automatically uses fallback models when the primary models are rate limited.
 Home-page: https://github.com/Haven-hvn/multiplexer-llm
 Author: Havencto
@@ -16,25 +16,24 @@ Classifier: Intended Audience :: Developers
 Classifier: License :: OSI Approved :: MIT License
 Classifier: Operating System :: OS Independent
 Classifier: Programming Language :: Python :: 3
-Classifier: Programming Language :: Python :: 3.8
-Classifier: Programming Language :: Python :: 3.9
 Classifier: Programming Language :: Python :: 3.10
 Classifier: Programming Language :: Python :: 3.11
 Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
 Classifier: Topic :: Software Development :: Libraries :: Python Modules
 Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
-Requires-Python: >=3.8
+Requires-Python: >=3.10
 Description-Content-Type: text/markdown
-Requires-Dist: openai==2.15.0
-Requires-Dist: typing-extensions==4.15.0; python_version < "3.10"
+Requires-Dist: openai==3.29.0
 Provides-Extra: dev
-Requires-Dist: pytest>=7.0.0; extra == "dev"
-Requires-Dist: pytest-asyncio>=0.21.0; extra == "dev"
-Requires-Dist: pytest-mock>=3.10.0; extra == "dev"
-Requires-Dist: black>=23.0.0; extra == "dev"
-Requires-Dist: isort>=5.12.0; extra == "dev"
-Requires-Dist: mypy>=1.0.0; extra == "dev"
-Requires-Dist: flake8>=6.0.0; extra == "dev"
+Requires-Dist: pytest==9.1.1; extra == "dev"
+Requires-Dist: pytest-asyncio==1.4.0; extra == "dev"
+Requires-Dist: pytest-mock==3.16.0; extra == "dev"
+Requires-Dist: black==26.10.1; extra == "dev"
+Requires-Dist: isort==9.0.2; extra == "dev"
+Requires-Dist: mypy==2.4.0; extra == "dev"
+Requires-Dist: flake8==7.4.1; extra == "dev"
 Dynamic: author
 Dynamic: home-page
 Dynamic: requires-python
@@ -81,7 +80,7 @@ Multiple Models:     [Model A: 10K] + [Model B: 50K] + [Model C: 15K] = 75,000 R
 pip install multiplexer-llm
 ```
 
-The package requires Python 3.8+ and automatically installs the OpenAI Python SDK as a dependency.
+The package requires Python 3.10+ and automatically installs the OpenAI Python SDK as a dependency.
 
 ## Quick Start
 
